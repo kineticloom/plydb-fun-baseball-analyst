@@ -1,0 +1,99 @@
+{
+  "databases": {
+    "statcast": {
+      "metadata": {
+        "name": "Statcast Pitch Data",
+        "description": "Pitch-level Statcast data from Baseball Savant. One row per pitch. Includes pitch type, velocity, spin rate, movement, release point, batted ball metrics (exit velocity, launch angle, distance), plate location, count, baserunner state, and outcome. Covers 2008+; Statcast-specific fields (launch speed, spin rate, etc.) available from 2015+."
+      },
+      "type": "file",
+      "path": "data/pybaseball/statcast/Season=*/Month=*/statcast.parquet",
+      "format": "parquet"
+    },
+    "batting_stats": {
+      "metadata": {
+        "name": "FanGraphs Batting Stats",
+        "description": "Season-level batting statistics from FanGraphs. One row per player per season. Includes traditional counting stats (H, HR, RBI, SB), rate stats (AVG, OBP, SLG, wOBA), park-adjusted metrics (wRC+), Statcast-era contact quality metrics (Hard%, LD%, GB%), plate discipline (K%, BB%, SwStr%, Contact%), and WAR."
+      },
+      "type": "file",
+      "path": "data/pybaseball/batting_stats/Season=*/batting_stats.parquet",
+      "format": "parquet"
+    },
+    "pitching_stats": {
+      "metadata": {
+        "name": "FanGraphs Pitching Stats",
+        "description": "Season-level pitching statistics from FanGraphs. One row per player per season. Includes traditional stats (W, L, ERA, WHIP, K/9, BB/9), advanced metrics (FIP, xFIP, SIERA), pitch mix percentages and velocities, batted ball profile (GB%, FB%, HR/FB), plate discipline rates, and WAR."
+      },
+      "type": "file",
+      "path": "data/pybaseball/pitching_stats/Season=*/pitching_stats.parquet",
+      "format": "parquet"
+    },
+    "batting_stats_bref": {
+      "metadata": {
+        "name": "Baseball Reference Batting Stats",
+        "description": "Season-level batting statistics from Baseball Reference (2008+). One row per player per season. Includes traditional and standard advanced stats: AVG, OBP, SLG, OPS, OPS+ (park-adjusted), TB, GDP, HBP. Useful as an alternative or complement to FanGraphs batting data."
+      },
+      "type": "file",
+      "path": "data/pybaseball/batting_stats_bref/Season=*/batting_stats_bref.parquet",
+      "format": "parquet"
+    },
+    "pitching_stats_bref": {
+      "metadata": {
+        "name": "Baseball Reference Pitching Stats",
+        "description": "Season-level pitching statistics from Baseball Reference (2008+). One row per player per season. Includes W, L, ERA, ERA+ (park-adjusted), WHIP, K/9, BB/9, H/9, HR/9, SO/W, IP, and role breakdown (GS, GF, SV, CG, SHO). Useful as an alternative or complement to FanGraphs pitching data."
+      },
+      "type": "file",
+      "path": "data/pybaseball/pitching_stats_bref/Season=*/pitching_stats_bref.parquet",
+      "format": "parquet"
+    },
+    "team_batting": {
+      "metadata": {
+        "name": "FanGraphs Team Batting Stats",
+        "description": "Season-level team batting statistics from FanGraphs. One row per team per season. Same stat columns as player batting_stats but aggregated at the team level. Useful for comparing franchise offensive profiles across seasons."
+      },
+      "type": "file",
+      "path": "data/pybaseball/team_batting/Season=*/team_batting.parquet",
+      "format": "parquet"
+    },
+    "team_pitching": {
+      "metadata": {
+        "name": "FanGraphs Team Pitching Stats",
+        "description": "Season-level team pitching statistics from FanGraphs (all pitchers combined). One row per team per season. Same stat columns as player pitching_stats but aggregated at the team level. Useful for comparing staff ERA, FIP, strikeout rates, and pitch mix across franchises."
+      },
+      "type": "file",
+      "path": "data/pybaseball/team_pitching/Season=*/team_pitching.parquet",
+      "format": "parquet"
+    },
+    "standings": {
+      "metadata": {
+        "name": "Division Standings",
+        "description": "End-of-season (or current) division standings from Baseball Reference. One row per team per season, all divisions concatenated with a DivisionIndex column. Includes W, L, W-L%, GB (games behind), runs scored, runs allowed, and Pythagorean W-L%. Covers 1969 to present."
+      },
+      "type": "file",
+      "path": "data/pybaseball/standings/Season=*/standings.parquet",
+      "format": "parquet"
+    },
+    "schedule": {
+      "metadata": {
+        "name": "Team Schedule and Record",
+        "description": "Game-by-game schedule and results for a team-season from Baseball Reference. One row per game. Includes date, opponent, home/away, runs scored and allowed, win/loss/tie outcome, running W-L record, winning and losing pitchers, save, game duration, attendance, and day/night flag."
+      },
+      "type": "file",
+      "path": "data/pybaseball/schedule/Season=*/Team=*/schedule.parquet",
+      "format": "parquet"
+    },
+    "player_ids": {
+      "metadata": {
+        "name": "Player ID Register",
+        "description": "Chadwick Bureau cross-system player ID register. One row per person. Maps MLBAM IDs (used in Statcast) to FanGraphs IDs, Baseball Reference IDs, and Retrosheet IDs. Also includes player names and first/last MLB season. Essential for joining Statcast data (which uses MLBAM numeric IDs) to named player records in other datasets."
+      },
+      "type": "file",
+      "path": "data/pybaseball/player_ids/player_ids.parquet",
+      "format": "parquet"
+    }
+  },
+  "semantic_context": {
+    "overlays": [
+      "plydb-overlay.yaml"
+    ]
+  }
+}

@@ -1,0 +1,1633 @@
+# yaml-language-server: $schema=.claude/skills/plydb/references/OSI/core-spec/osi-schema.json
+
+# Semantic overlay for the pybaseball MLB dataset.
+
+version: "1.0"
+
+semantic_model:
+  - name: mlb_pybaseball
+    description: >
+      MLB baseball data sourced via pybaseball, covering pitch-level Statcast
+      data, season-level batting and pitching statistics (FanGraphs and Baseball
+      Reference), team stats, division standings, team schedules, and a
+      cross-system player ID register. The Season column is the primary temporal
+      join key across all datasets. Player identity is linked by MLBAM ID
+      (Statcast) or player name (FanGraphs/BBRef), with player_ids providing
+      the cross-system bridge.
+    ai_context:
+      instructions: >
+        This model contains MLB baseball data from multiple sources.
+
+        PLAYER IDENTITY AND JOINS: Statcast uses numeric MLBAM IDs in the
+        'batter' and 'pitcher' columns — these are NOT names. To get player
+        names for Statcast data, join to player_ids on
+        statcast.batter = player_ids.key_mlbam (for batters) or
+        statcast.pitcher = player_ids.key_mlbam (for pitchers).
+        FanGraphs tables (batting_stats, pitching_stats, team_batting,
+        team_pitching) use a 'Name' column with full player names and an
+        'IDfg' column that matches player_ids.key_fangraphs.
+        Baseball Reference tables use player names and a 'Tm' column (not
+        'Team'); the BBRef ID matches player_ids.key_bbref.
+
+        STATCAST COVERAGE: The 'events' column is NULL for every pitch that
+        does not end a plate appearance. To filter to plate appearance outcomes
+        only, use: WHERE events IS NOT NULL. For batted balls only:
+        WHERE type = 'X'. For regular season only: WHERE game_type = 'R'.
+        launch_speed (exit velocity) and launch_angle are only populated from
+        2015 onward; queries on those fields should filter Season >= 2015.
+
+        PARK ADJUSTMENT: wRC+ (batting_stats) is park- and league-adjusted
+        with 100 = league average. Prefer this over raw AVG when comparing
+        players across parks or eras. Note: batting_stats_bref and
+        pitching_stats_bref do NOT include OPS+ or ERA+ in the pybaseball
+        output; use FanGraphs tables for park-adjusted metrics.
+
+        STANDINGS DIVISION ORDER: The DivisionIndex column in standings maps
+        to divisions in the order Baseball Reference returns them for post-1994
+        seasons: 0=AL East, 1=AL Central, 2=AL West, 3=NL East,
+        4=NL Central, 5=NL West. Pre-1994 division counts differ.
+
+        WAR SOURCE: WAR in batting_stats and pitching_stats is FanGraphs WAR
+        (fWAR), which uses FIP for pitchers. Baseball Reference WAR (rWAR)
+        is not included in these tables but can be obtained separately.
+
+        SCHEDULE HOME/AWAY: In the schedule table, the Home_Away column is
+        '@' for away games and 'Home' for home games.
+
+      examples:
+        - "Who had the highest wRC+ in 2023?"
+        - "Which pitchers had a FIP below 3.00 last season?"
+        - "What is the average exit velocity on fastballs vs sliders?"
+        - "Which team had the best run differential in 2024?"
+        - "How does the Yankees' team ERA compare to the league average?"
+        - "Find all plate appearances by Aaron Judge against left-handed pitchers"
+        - "What was the Dodgers' home vs. away winning percentage in 2024?"
+        - "Which pitchers throw the highest spin rate curveballs?"
+
+    datasets:
+
+      # -----------------------------------------------------------------------
+      - name: statcast
+        source: statcast.default.statcast
+        primary_key: [game_pk, at_bat_number, pitch_number]
+        description: >
+          Pitch-level Statcast data from Baseball Savant. One row per pitch.
+          The richest dataset: every pitch thrown in MLB since 2008 with
+          physical measurements (velocity, spin, movement, release point),
+          plate location, batted ball metrics, game state, and outcome.
+          Statcast-specific fields (exit velocity, spin rate, launch angle)
+          are only populated from 2015 onward.
+        ai_context:
+          synonyms:
+            - "pitch data"
+            - "pitch-by-pitch"
+            - "Baseball Savant"
+            - "exit velocity"
+            - "launch angle"
+            - "spin rate"
+            - "barrel"
+
+          instructions: >
+            batter and pitcher columns are numeric MLBAM IDs, not names.
+            Join to player_ids to get names.
+            events IS NULL for pitches that don't end a plate appearance.
+            type = 'X' means the ball was put in play; 'S' = strike; 'B' = ball.
+            game_type values: 'R'=regular season, 'F'=wild card, 'D'=ALDS/NLDS,
+            'L'=ALCS/NLCS, 'W'=World Series. Filter game_type = 'R' for
+            regular season analysis.
+            launch_speed and launch_angle require Season >= 2015.
+            p_throws and stand are 'L' or 'R' (pitcher arm / batter hand).
+
+        fields:
+          - name: game_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: game_date
+            description: Date the game was played (YYYY-MM-DD).
+            dimension:
+              is_time: true
+            ai_context:
+              synonyms: ["date", "game date"]
+
+          - name: game_year
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: game_year
+            description: Season year, e.g. 2024. Same as the Season partition column.
+            dimension:
+              is_time: true
+            ai_context:
+              synonyms: ["season", "year"]
+
+          - name: player_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: player_name
+            description: >
+              Full name of the pitcher. Format varies (e.g. "Sale, Chris").
+              This is the pitcher's name, not the batter's.
+            ai_context:
+              synonyms: ["pitcher name"]
+
+          - name: batter
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: batter
+            description: >
+              MLBAM numeric player ID for the batter. Join to
+              player_ids.key_mlbam to get the batter's name.
+            ai_context:
+              synonyms: ["batter id", "hitter id", "mlbam batter"]
+
+          - name: pitcher
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: pitcher
+            description: >
+              MLBAM numeric player ID for the pitcher. Join to
+              player_ids.key_mlbam to get the pitcher's name.
+            ai_context:
+              synonyms: ["pitcher id", "mlbam pitcher"]
+
+          - name: events
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: events
+            description: >
+              Plate appearance outcome, populated only on the final pitch of
+              each PA. NULL for all other pitches. Common values:
+              'single', 'double', 'triple', 'home_run', 'strikeout',
+              'walk', 'hit_by_pitch', 'field_out', 'grounded_into_double_play',
+              'force_out', 'sac_fly', 'sac_bunt', 'field_error'.
+            ai_context:
+              synonyms: ["outcome", "result", "plate appearance result", "PA result"]
+
+          - name: description
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: description
+            description: >
+              Per-pitch outcome description. Common values:
+              'ball', 'called_strike', 'swinging_strike', 'foul',
+              'foul_tip', 'hit_into_play', 'blocked_ball',
+              'swinging_strike_blocked'.
+            ai_context:
+              synonyms: ["pitch result", "pitch outcome"]
+
+          - name: pitch_type
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: pitch_type
+            description: >
+              Pitch type code. Common values: 'FF'=4-seam fastball,
+              'SI'=sinker, 'FC'=cutter, 'SL'=slider, 'CH'=changeup,
+              'CU'=curveball, 'FS'=splitter, 'KC'=knuckle curve,
+              'KN'=knuckleball, 'EP'=eephus.
+            ai_context:
+              synonyms: ["pitch", "pitch name", "offering"]
+
+          - name: pitch_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: pitch_name
+            description: >
+              Full pitch name, e.g. "4-Seam Fastball", "Slider", "Changeup".
+              Human-readable version of pitch_type.
+            ai_context:
+              synonyms: ["pitch type name"]
+
+          - name: release_speed
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: release_speed
+            description: Pitch velocity at the point of release (mph).
+            ai_context:
+              synonyms: ["velocity", "pitch speed", "velo", "mph"]
+
+          - name: effective_speed
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: effective_speed
+            description: >
+              Perceived velocity accounting for extension (release distance
+              from rubber). Higher extension makes the pitch "play faster".
+            ai_context:
+              synonyms: ["perceived velocity", "perceived velo"]
+
+          - name: release_spin_rate
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: release_spin_rate
+            description: Spin rate at release (rpm).
+            ai_context:
+              synonyms: ["spin rate", "rpm", "spin"]
+
+          - name: pfx_x
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: pfx_x
+            description: >
+              Horizontal movement relative to a spinless pitch (inches),
+              from the catcher's perspective. Positive = toward right-hand
+              batter (arm-side for RHP).
+            ai_context:
+              synonyms: ["horizontal break", "horizontal movement", "HMov"]
+
+          - name: pfx_z
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: pfx_z
+            description: >
+              Vertical movement relative to a spinless pitch (inches).
+              Positive = rise; negative = drop beyond gravity.
+            ai_context:
+              synonyms: ["vertical break", "vertical movement", "VMov", "induced vertical break", "IVB"]
+
+          - name: plate_x
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: plate_x
+            description: >
+              Horizontal position at the front of home plate (feet),
+              from the catcher's perspective. 0 = center of plate;
+              negative = toward left-hand batter.
+            ai_context:
+              synonyms: ["horizontal location", "plate side"]
+
+          - name: plate_z
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: plate_z
+            description: >
+              Vertical position at the front of home plate (feet above ground).
+              Compare to sz_top and sz_bot for strike zone context.
+            ai_context:
+              synonyms: ["vertical location", "height", "plate height"]
+
+          - name: sz_top
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: sz_top
+            description: Top of the batter's strike zone (feet), measured for this specific PA.
+
+          - name: sz_bot
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: sz_bot
+            description: Bottom of the batter's strike zone (feet), measured for this specific PA.
+
+          - name: zone
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: zone
+            description: >
+              Strike zone region (1-9 = in-zone, 11-14 = out-of-zone edge,
+              indicating pitch location bucket).
+
+          - name: launch_speed
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: launch_speed
+            description: >
+              Exit velocity off the bat (mph). Only populated for balls in
+              play (type = 'X') and only available from 2015+.
+            ai_context:
+              synonyms: ["exit velocity", "EV", "exit velo", "batted ball speed"]
+
+          - name: launch_angle
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: launch_angle
+            description: >
+              Vertical launch angle off the bat (degrees). Negative = downward
+              (groundball); 10-25 = line drive; 25-50 = fly ball.
+              Only available from 2015+.
+            ai_context:
+              synonyms: ["launch angle", "LA", "angle"]
+
+          - name: launch_speed_angle
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: launch_speed_angle
+            description: >
+              Batted ball classification code based on launch speed and angle:
+              1=weak, 2=topped, 3=under, 4=flare/burner, 5=solid contact,
+              6=barrel.
+            ai_context:
+              synonyms: ["barrel", "batted ball quality", "quality of contact"]
+
+          - name: hit_distance_sc
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: hit_distance_sc
+            description: Projected hit distance (feet) for balls in play.
+            ai_context:
+              synonyms: ["hit distance", "distance", "projected distance"]
+
+          - name: estimated_ba_using_speedangle
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: estimated_ba_using_speedangle
+            description: >
+              Expected batting average (xBA) based on launch speed and angle.
+              Isolates contact quality from fielding luck.
+            ai_context:
+              synonyms: ["xBA", "expected batting average", "expected BA"]
+
+          - name: estimated_woba_using_speedangle
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: estimated_woba_using_speedangle
+            description: >
+              Expected wOBA (xwOBA) based on launch speed and angle.
+              Best single metric for quality of contact.
+            ai_context:
+              synonyms: ["xwOBA", "expected wOBA", "expected weighted on-base average"]
+
+          - name: woba_value
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: woba_value
+            description: >
+              wOBA run value for this plate appearance outcome. Use
+              AVG(woba_value) over PAs to compute wOBA for a player or group.
+              NULL for non-PA-ending pitches.
+
+          - name: delta_run_exp
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: delta_run_exp
+            description: >
+              Change in run expectancy from this pitch. Positive = batter
+              gained run expectancy; negative = pitcher gained.
+            ai_context:
+              synonyms: ["run value", "run expectancy delta", "RE24 delta"]
+
+          - name: type
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: type
+            description: >
+              Simplified pitch outcome: 'S'=strike (swinging or called),
+              'B'=ball, 'X'=ball in play.
+            ai_context:
+              synonyms: ["ball in play", "contact"]
+
+          - name: bb_type
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: bb_type
+            description: >
+              Batted ball type for balls in play: 'ground_ball',
+              'fly_ball', 'line_drive', 'popup'. NULL otherwise.
+            ai_context:
+              synonyms: ["batted ball type", "ground ball", "fly ball", "line drive"]
+
+          - name: game_type
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: game_type
+            description: >
+              Game type: 'R'=regular season, 'F'=wild card game,
+              'D'=division series, 'L'=league championship series,
+              'W'=World Series. Filter game_type = 'R' for regular
+              season analysis only.
+            ai_context:
+              synonyms: ["regular season", "postseason", "playoffs"]
+
+          - name: stand
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: stand
+            description: Batter handedness. 'L'=left-handed, 'R'=right-handed.
+            ai_context:
+              synonyms: ["batter hand", "batter side", "handedness"]
+
+          - name: p_throws
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: p_throws
+            description: Pitcher throwing arm. 'L'=left-handed, 'R'=right-handed.
+            ai_context:
+              synonyms: ["pitcher hand", "pitcher arm", "throws"]
+
+          - name: home_team
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: home_team
+            description: Home team abbreviation, e.g. 'NYY', 'BOS', 'LAD'.
+            ai_context:
+              synonyms: ["home team"]
+
+          - name: away_team
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: away_team
+            description: Away team abbreviation.
+            ai_context:
+              synonyms: ["away team", "visiting team"]
+
+          - name: inning
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: inning
+            description: Inning number (1-indexed; extra innings go beyond 9).
+
+          - name: inning_topbot
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: inning_topbot
+            description: "'Top' = away team batting; 'Bot' = home team batting."
+
+          - name: balls
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: balls
+            description: Ball count before this pitch (0-3).
+
+          - name: strikes
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: strikes
+            description: Strike count before this pitch (0-2).
+
+          - name: outs_when_up
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: outs_when_up
+            description: Number of outs when this batter came up (0, 1, or 2).
+
+          - name: on_1b
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: on_1b
+            description: MLBAM player ID of runner on first base, or NULL if base is empty.
+
+          - name: on_2b
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: on_2b
+            description: MLBAM player ID of runner on second base, or NULL if base is empty.
+
+          - name: on_3b
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: on_3b
+            description: MLBAM player ID of runner on third base, or NULL if base is empty.
+
+          - name: game_pk
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: game_pk
+            description: MLB game unique identifier. Use with at_bat_number and pitch_number to uniquely identify a pitch.
+            ai_context:
+              synonyms: ["game id", "game identifier"]
+
+          - name: at_bat_number
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: at_bat_number
+            description: Plate appearance number within the game (1-indexed).
+
+          - name: pitch_number
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: pitch_number
+            description: Pitch number within the current plate appearance (1-indexed).
+
+          - name: release_extension
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: release_extension
+            description: Distance from the rubber to the release point (feet). Higher = pitcher "on top of" hitters.
+            ai_context:
+              synonyms: ["extension"]
+
+          - name: spin_axis
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: spin_axis
+            description: Spin axis in degrees (0-360). Affects pitch movement direction.
+
+          - name: if_fielding_alignment
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: if_fielding_alignment
+            description: Infield alignment used on this pitch ('Standard', 'Shift', 'Strategic').
+
+          - name: of_fielding_alignment
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: of_fielding_alignment
+            description: Outfield alignment used on this pitch ('Standard', '4th outfielder', 'Strategic').
+
+      # -----------------------------------------------------------------------
+      - name: batting_stats
+        source: batting_stats.default.batting_stats
+        primary_key: [Season, Name, Team]
+        description: >
+          FanGraphs season-level batting statistics. One row per player per
+          season. The most comprehensive player batting dataset: counting stats,
+          rate stats, park-adjusted metrics, Statcast contact quality, plate
+          discipline, sprint speed, and WAR.
+        ai_context:
+          synonyms:
+            - "batter stats"
+            - "hitter stats"
+            - "offensive stats"
+            - "FanGraphs batting"
+
+          instructions: >
+            wRC+ is the best single park-adjusted offensive metric (100 = league
+            average; higher is better). WAR here is fWAR (FanGraphs).
+            The 'Season' column is year (integer). 'Team' uses FanGraphs
+            abbreviations which may differ slightly from other sources.
+            Players traded mid-season appear multiple times (one row per team
+            plus a 'totals' row with Team = '---' or multi-team entry).
+            Statcast-era metrics (Hard%, Barrel%, xwOBA) are only available
+            from ~2015 onward and will be NULL for earlier seasons.
+
+        fields:
+          - name: Season
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: Season
+            description: Season year, e.g. 2024.
+            dimension:
+              is_time: true
+
+          - name: Name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: Name
+            description: Player full name.
+            ai_context:
+              synonyms: ["player", "batter", "hitter"]
+
+          - name: Team
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: Team
+            description: Team abbreviation (FanGraphs format). '---' indicates a combined multi-team row for traded players.
+            ai_context:
+              synonyms: ["team", "club", "franchise"]
+
+          - name: Age
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: Age
+            description: Player age as of June 30 of the season.
+
+          - name: G
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: G
+            description: Games played.
+            ai_context:
+              synonyms: ["games", "games played"]
+
+          - name: PA
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: PA
+            description: Plate appearances. The standard denominator for rate stats.
+            ai_context:
+              synonyms: ["plate appearances"]
+
+          - name: AB
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: AB
+            description: At-bats. Excludes walks, HBP, sacrifices.
+
+          - name: H
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: H
+            description: Hits (all types combined).
+            ai_context:
+              synonyms: ["hits"]
+
+          - name: HR
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: HR
+            description: Home runs.
+            ai_context:
+              synonyms: ["home runs", "dingers", "long balls"]
+
+          - name: RBI
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: RBI
+            description: Runs batted in.
+            ai_context:
+              synonyms: ["runs batted in", "ribbies"]
+
+          - name: SB
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: SB
+            description: Stolen bases.
+            ai_context:
+              synonyms: ["stolen bases", "steals"]
+
+          - name: AVG
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: AVG
+            description: Batting average (H/AB). Not park-adjusted; prefer wRC+ or wOBA.
+            ai_context:
+              synonyms: ["batting average", "average", "BA"]
+
+          - name: OBP
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: OBP
+            description: On-base percentage. Includes hits, walks, and HBP.
+            ai_context:
+              synonyms: ["on-base percentage", "on base"]
+
+          - name: SLG
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: SLG
+            description: Slugging percentage (total bases / AB).
+            ai_context:
+              synonyms: ["slugging", "slugging percentage"]
+
+          - name: OPS
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: OPS
+            description: On-base plus slugging (OBP + SLG). Simple but not park-adjusted.
+            ai_context:
+              synonyms: ["OPS"]
+
+          - name: wOBA
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: wOBA
+            description: >
+              Weighted on-base average. Weights each outcome (single, double,
+              HR, BB, HBP) by its actual run value. Better than OPS.
+              League average is typically ~.320.
+            ai_context:
+              synonyms: ["weighted on-base average", "woba"]
+
+          - name: "wRC+"
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: "\"wRC+\""
+            description: >
+              Weighted runs created plus. Park- and league-adjusted offensive
+              value. 100 = exactly league average; 150 = 50% better than
+              average; 85 = 15% below average. The best single hitting metric
+              for cross-era and cross-park comparisons.
+            ai_context:
+              synonyms: ["wRC+", "wRC plus", "park-adjusted offense", "offensive value"]
+
+          - name: BABIP
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: BABIP
+            description: >
+              Batting average on balls in play. Luck-sensitive; sustained
+              deviation from ~.300 may indicate true skill or regression
+              candidate.
+            ai_context:
+              synonyms: ["BABIP", "batting average on balls in play"]
+
+          - name: ISO
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ISO
+            description: >
+              Isolated power (SLG - AVG). Measures raw extra-base-hit power.
+            ai_context:
+              synonyms: ["isolated power", "power", "ISO"]
+
+          - name: "BB%"
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: "\"BB%\""
+            description: Walk rate (BB / PA). League average ~8.5%.
+            ai_context:
+              synonyms: ["walk rate", "walk percentage", "BB rate"]
+
+          - name: "K%"
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: "\"K%\""
+            description: Strikeout rate (K / PA). League average ~22%.
+            ai_context:
+              synonyms: ["strikeout rate", "strikeout percentage", "K rate", "whiff rate"]
+
+          - name: "Hard%"
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: "\"Hard%\""
+            description: >
+              Percentage of batted balls classified as hard contact.
+              Available from 2002+; Statcast-era barrel% is more precise.
+            ai_context:
+              synonyms: ["hard hit rate", "hard contact"]
+
+          - name: "GB%"
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: "\"GB%\""
+            description: Ground ball rate (% of batted balls that are grounders).
+            ai_context:
+              synonyms: ["ground ball rate", "GB rate"]
+
+          - name: "FB%"
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: "\"FB%\""
+            description: Fly ball rate (% of batted balls that are fly balls).
+            ai_context:
+              synonyms: ["fly ball rate", "FB rate"]
+
+          - name: "LD%"
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: "\"LD%\""
+            description: Line drive rate (% of batted balls that are line drives).
+            ai_context:
+              synonyms: ["line drive rate", "LD rate"]
+
+          - name: "SwStr%"
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: "\"SwStr%\""
+            description: Swinging strike rate (swinging strikes / total pitches seen).
+            ai_context:
+              synonyms: ["swinging strike rate", "whiff rate", "miss rate"]
+
+          - name: WAR
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: WAR
+            description: >
+              FanGraphs Wins Above Replacement (fWAR). All-in-one value
+              metric combining offense, baserunning, and defense.
+              2 WAR = average starter; 5+ = All-Star; 8+ = MVP candidate.
+            ai_context:
+              synonyms: ["wins above replacement", "fWAR", "value"]
+
+      # -----------------------------------------------------------------------
+      - name: pitching_stats
+        source: pitching_stats.default.pitching_stats
+        primary_key: [Season, Name, Team]
+        description: >
+          FanGraphs season-level pitching statistics. One row per player per
+          season. Includes traditional stats, ERA estimators (FIP, xFIP, SIERA),
+          pitch mix and velocity, batted ball profile, plate discipline rates,
+          and WAR. The most comprehensive pitching dataset.
+        ai_context:
+          synonyms:
+            - "pitcher stats"
+            - "pitching data"
+            - "FanGraphs pitching"
+
+          instructions: >
+            FIP (Fielding Independent Pitching) and xFIP are better
+            predictors of future ERA than ERA itself because they remove
+            defense and some luck. Lower is better for all ERA-scale metrics.
+            WAR here is fWAR using FIP. ERA+ is not available in any
+            pybaseball table; use wRC+ / FIP / xFIP for park-adjusted comparisons.
+            Pitch type velocity columns follow the pattern vFA (4-seam),
+            vSI (sinker), vCT (cutter), vCH (changeup), vSL (slider),
+            vCU (curveball). Usage% columns follow FA% (4-seam), SI%, etc.
+
+        fields:
+          - name: Season
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: Season
+            description: Season year.
+            dimension:
+              is_time: true
+
+          - name: Name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: Name
+            description: Player full name.
+            ai_context:
+              synonyms: ["pitcher", "player"]
+
+          - name: Team
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: Team
+            description: Team abbreviation (FanGraphs format).
+
+          - name: Age
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: Age
+            description: Pitcher age as of June 30.
+
+          - name: W
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: W
+            description: Wins. Context-dependent; use ERA/FIP for quality assessment.
+
+          - name: L
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: L
+            description: Losses.
+
+          - name: ERA
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ERA
+            description: >
+              Earned run average (ER * 9 / IP). Affected by defense and luck.
+              Prefer FIP or xFIP for true-talent assessment.
+            ai_context:
+              synonyms: ["earned run average"]
+
+          - name: IP
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: IP
+            description: Innings pitched (e.g. 6.1 = 6 and 1/3 innings).
+            ai_context:
+              synonyms: ["innings", "innings pitched"]
+
+          - name: GS
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: GS
+            description: Games started. GS > 0 identifies starters.
+            ai_context:
+              synonyms: ["starts", "games started"]
+
+          - name: SV
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: SV
+            description: Saves. Identifies closer role.
+            ai_context:
+              synonyms: ["saves"]
+
+          - name: WHIP
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: WHIP
+            description: Walks plus hits per inning pitched.
+            ai_context:
+              synonyms: ["WHIP"]
+
+          - name: "K/9"
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: "\"K/9\""
+            description: Strikeouts per 9 innings.
+            ai_context:
+              synonyms: ["strikeouts per 9", "K rate", "K/9"]
+
+          - name: "BB/9"
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: "\"BB/9\""
+            description: Walks per 9 innings.
+            ai_context:
+              synonyms: ["walks per 9", "walk rate", "BB/9", "control"]
+
+          - name: "K%"
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: "\"K%\""
+            description: Strikeout rate (K per batter faced). Better than K/9 for comparing starters and relievers.
+            ai_context:
+              synonyms: ["strikeout percentage", "K%", "strikeout rate"]
+
+          - name: "BB%"
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: "\"BB%\""
+            description: Walk rate (BB per batter faced).
+            ai_context:
+              synonyms: ["walk percentage", "walk rate", "BB%"]
+
+          - name: "K-BB%"
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: "\"K-BB%\""
+            description: >
+              Strikeout rate minus walk rate. The single best rate metric for
+              pitcher command and stuff combined. Higher is better.
+            ai_context:
+              synonyms: ["K minus BB", "K-BB", "command metric"]
+
+          - name: FIP
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: FIP
+            description: >
+              Fielding Independent Pitching. ERA-scale metric based only on
+              HR, BB, HBP, and K — removes defense and luck. Best current-year
+              ERA estimator. FIP < ERA = pitcher was unlucky or may improve.
+            ai_context:
+              synonyms: ["FIP", "fielding independent pitching"]
+
+          - name: xFIP
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: xFIP
+            description: >
+              Expected FIP, normalising HR/FB rate to league average. Better
+              than FIP for cross-park comparisons.
+            ai_context:
+              synonyms: ["xFIP", "expected FIP"]
+
+          - name: SIERA
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: SIERA
+            description: >
+              Skill-interactive ERA. FanGraphs' most accurate ERA predictor;
+              accounts for batted ball type and rate interactions.
+            ai_context:
+              synonyms: ["SIERA", "skill-interactive ERA"]
+
+          - name: "GB%"
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: "\"GB%\""
+            description: Ground ball rate (higher = more grounders induced, harder to hit HR).
+            ai_context:
+              synonyms: ["ground ball rate", "GB%"]
+
+          - name: "HR/FB"
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: "\"HR/FB\""
+            description: >
+              Home run per fly ball rate. League average ~11%. Pitchers
+              consistently above/below may have a true skill, but regresses
+              toward average.
+            ai_context:
+              synonyms: ["HR/FB", "home run rate", "home run to fly ball"]
+
+          - name: "SwStr%"
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: "\"SwStr%\""
+            description: Swinging strike rate. Strong indicator of swing-and-miss stuff.
+            ai_context:
+              synonyms: ["swinging strike rate", "whiff rate", "miss rate", "stuff"]
+
+          - name: WAR
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: WAR
+            description: >
+              FanGraphs Wins Above Replacement (fWAR) using FIP.
+              2 WAR = average starter; 5+ = Cy Young candidate.
+            ai_context:
+              synonyms: ["wins above replacement", "fWAR", "pitcher value"]
+
+      # -----------------------------------------------------------------------
+      - name: batting_stats_bref
+        source: batting_stats_bref.default.batting_stats_bref
+        primary_key: [Name, Tm]
+        description: >
+          Baseball Reference season-level batting statistics (2008+). One row
+          per player. Note: the pybaseball output does NOT include OPS+; use
+          FanGraphs batting_stats (wRC+) for park-adjusted metrics.
+          Team column is 'Tm'. Player MLBAM ID is in the 'mlbID' column.
+        ai_context:
+          synonyms:
+            - "Baseball Reference batting"
+            - "bref batting"
+
+        fields:
+          - name: Name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: Name
+            description: Player full name.
+
+          - name: Tm
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: Tm
+            description: Team abbreviation (Baseball Reference format).
+            ai_context:
+              synonyms: ["team", "club"]
+
+          - name: BA
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: BA
+            description: Batting average.
+            ai_context:
+              synonyms: ["batting average", "AVG", "average"]
+
+          - name: mlbID
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: mlbID
+            description: MLBAM player ID. Matches player_ids.key_mlbam and statcast.batter/pitcher.
+            ai_context:
+              synonyms: ["MLBAM ID", "MLB ID"]
+
+      # -----------------------------------------------------------------------
+      - name: pitching_stats_bref
+        source: pitching_stats_bref.default.pitching_stats_bref
+        primary_key: [Name, Tm]
+        description: >
+          Baseball Reference season-level pitching statistics (2008+). One row
+          per player. Note: the pybaseball output does NOT include ERA+; use
+          FanGraphs pitching_stats (FIP, xFIP) for park-adjusted metrics.
+          Team column is 'Tm'. Includes SO/W ratio and BAbip.
+          Player MLBAM ID is in the 'mlbID' column.
+        ai_context:
+          synonyms:
+            - "Baseball Reference pitching"
+            - "bref pitching"
+
+        fields:
+          - name: Name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: Name
+            description: Player full name.
+
+          - name: Tm
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: Tm
+            description: Team abbreviation (Baseball Reference format).
+            ai_context:
+              synonyms: ["team", "club"]
+
+          - name: ERA
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ERA
+            description: Earned run average.
+
+          - name: "SO/W"
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: "\"SO/W\""
+            description: Strikeout-to-walk ratio.
+            ai_context:
+              synonyms: ["K/BB", "strikeout to walk", "command ratio"]
+
+          - name: BAbip
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: BAbip
+            description: Batting average on balls in play against this pitcher.
+            ai_context:
+              synonyms: ["BABIP against", "BAbip"]
+
+          - name: SO9
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: SO9
+            description: Strikeouts per 9 innings.
+            ai_context:
+              synonyms: ["K/9", "strikeouts per 9"]
+
+          - name: mlbID
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: mlbID
+            description: MLBAM player ID. Matches player_ids.key_mlbam and statcast.pitcher.
+            ai_context:
+              synonyms: ["MLBAM ID", "MLB ID"]
+
+      # -----------------------------------------------------------------------
+      - name: team_batting
+        source: team_batting.default.team_batting
+        primary_key: [Season, Team]
+        description: >
+          FanGraphs team-level batting statistics. One row per team per season.
+          Same columns as batting_stats but aggregated across all hitters on
+          the roster. Use for franchise offensive comparisons.
+        ai_context:
+          synonyms:
+            - "team offense"
+            - "team batting"
+            - "franchise hitting"
+
+        fields:
+          - name: Season
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: Season
+            description: Season year.
+            dimension:
+              is_time: true
+
+          - name: Team
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: Team
+            description: Team name or abbreviation.
+            ai_context:
+              synonyms: ["franchise", "club", "team"]
+
+          - name: "wRC+"
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: "\"wRC+\""
+            description: >
+              Team park-adjusted offensive value. 100 = league average.
+              Best single metric for comparing team offenses.
+            ai_context:
+              synonyms: ["team offense quality", "wRC+"]
+
+          - name: WAR
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: WAR
+            description: Team offensive WAR (position players).
+
+      # -----------------------------------------------------------------------
+      - name: team_pitching
+        source: team_pitching.default.team_pitching
+        primary_key: [Season, Team]
+        description: >
+          FanGraphs team-level pitching statistics. One row per team per season.
+          Same columns as pitching_stats but aggregated across the entire staff.
+          Use for franchise pitching comparisons.
+        ai_context:
+          synonyms:
+            - "team pitching"
+            - "team ERA"
+            - "staff stats"
+
+        fields:
+          - name: Season
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: Season
+            description: Season year.
+            dimension:
+              is_time: true
+
+          - name: Team
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: Team
+            description: Team name or abbreviation.
+            ai_context:
+              synonyms: ["franchise", "club", "team"]
+
+          - name: ERA
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ERA
+            description: Team ERA.
+
+          - name: FIP
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: FIP
+            description: Team FIP. Better than ERA for comparing staff quality.
+            ai_context:
+              synonyms: ["team FIP", "staff FIP"]
+
+          - name: WAR
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: WAR
+            description: Team pitching WAR.
+
+      # -----------------------------------------------------------------------
+      - name: standings
+        source: standings.default.standings
+        primary_key: [Season, DivisionIndex, Tm]
+        description: >
+          Division standings per season from Baseball Reference. One row per
+          team. All divisions are concatenated into a single table with a
+          DivisionIndex column to identify the division. Covers 1969+.
+        ai_context:
+          synonyms:
+            - "division standings"
+            - "standings"
+            - "win-loss record"
+            - "games behind"
+
+          instructions: >
+            DivisionIndex for post-1994 seasons: 0=AL East, 1=AL Central,
+            2=AL West, 3=NL East, 4=NL Central, 5=NL West.
+            Pre-1994 had only two divisions per league.
+            W, L, W-L%, and GB are stored as proper numeric types (INT/DOUBLE)
+            — no casting needed. GB is 0.0 for the division leader.
+            'Tm' contains full team names (e.g. 'New York Yankees'), not
+            abbreviations. It may include suffix markers for clinching.
+
+        fields:
+          - name: Season
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: Season
+            description: Season year (added by download script).
+            dimension:
+              is_time: true
+
+          - name: DivisionIndex
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: DivisionIndex
+            description: >
+              Division identifier (0-5). Post-1994: 0=AL East, 1=AL Central,
+              2=AL West, 3=NL East, 4=NL Central, 5=NL West.
+            ai_context:
+              synonyms: ["division", "AL East", "NL West", "division id"]
+
+          - name: Tm
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: Tm
+            description: Team name or abbreviation.
+            ai_context:
+              synonyms: ["team", "franchise", "club"]
+
+          - name: W
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: W
+            description: Wins (integer).
+
+          - name: L
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: L
+            description: Losses (integer).
+
+          - name: "W-L%"
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: "\"W-L%\""
+            description: Win percentage (float, e.g. 0.580).
+            ai_context:
+              synonyms: ["winning percentage", "win pct", "win rate"]
+
+          - name: GB
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: GB
+            description: >
+              Games behind the division leader (float). 0.0 for the
+              division leader.
+            ai_context:
+              synonyms: ["games behind", "GB", "back"]
+
+      # -----------------------------------------------------------------------
+      - name: schedule
+        source: schedule.default.schedule
+        primary_key: [Season, Team, Gm]
+        description: >
+          Game-by-game schedule and results for a specific team-season from
+          Baseball Reference. One row per game. Includes date, opponent,
+          home/away, runs scored and allowed, outcome (W/L/T), running record,
+          starting pitchers, attendance, and game duration.
+        ai_context:
+          synonyms:
+            - "game log"
+            - "game results"
+            - "schedule"
+            - "win loss record"
+
+          instructions: >
+            The Season and Team columns are added by the download script.
+            The Home_Away column is '@' for away games and 'Home' for home games.
+            W/L column values include walk-off wins ('W-wo') and losses.
+            Future games in an incomplete season will have blank result fields.
+            Winning pitcher (Win), losing pitcher (Loss), and save (Save)
+            columns contain pitcher names, not IDs.
+
+        fields:
+          - name: Season
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: Season
+            description: Season year (added by download script).
+            dimension:
+              is_time: true
+
+          - name: Team
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: Team
+            description: Team abbreviation (added by download script).
+            ai_context:
+              synonyms: ["team", "franchise"]
+
+          - name: Date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: Date
+            description: Game date (may include day-of-week prefix, e.g. "Monday, Apr 1").
+            dimension:
+              is_time: true
+            ai_context:
+              synonyms: ["game date", "date"]
+
+          - name: Opp
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: Opp
+            description: Opponent team abbreviation.
+            ai_context:
+              synonyms: ["opponent", "opposing team", "vs"]
+
+          - name: R
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: R
+            description: Runs scored by the tracked team.
+            ai_context:
+              synonyms: ["runs scored", "runs for"]
+
+          - name: RA
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: RA
+            description: Runs allowed (opponent runs scored).
+            ai_context:
+              synonyms: ["runs allowed", "runs against"]
+
+          - name: "W/L"
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: "\"W/L\""
+            description: >
+              Game result: 'W' (win), 'L' (loss), 'T' (tie).
+              'W-wo' and 'L-wo' indicate walk-off outcomes.
+            ai_context:
+              synonyms: ["result", "win", "loss", "outcome"]
+
+          - name: Attendance
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: Attendance
+            description: Game attendance (may be blank for away games in some seasons).
+            ai_context:
+              synonyms: ["attendance", "crowd", "fans"]
+
+          - name: Streak
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: Streak
+            description: >
+              Current win or loss streak at end of game (integer).
+              Positive = win streak length; negative = loss streak length.
+            ai_context:
+              synonyms: ["streak", "hot streak", "skid"]
+
+      # -----------------------------------------------------------------------
+      - name: player_ids
+        source: player_ids.default.player_ids
+        primary_key: [key_mlbam]
+        description: >
+          Chadwick Bureau cross-system player ID register. One row per person.
+          Maps MLBAM IDs (used in Statcast batter/pitcher columns) to FanGraphs,
+          Baseball Reference, and Retrosheet IDs, plus player names and MLB
+          career years. Essential bridge table for joining Statcast data to
+          named player records.
+        ai_context:
+          synonyms:
+            - "player IDs"
+            - "player register"
+            - "Chadwick"
+            - "MLBAM ID"
+            - "player lookup"
+
+          instructions: >
+            To look up a player's name from a Statcast MLBAM ID:
+              JOIN player_ids ON statcast.batter = player_ids.key_mlbam
+            To link FanGraphs stats to Statcast:
+              JOIN player_ids ON batting_stats.IDfg = player_ids.key_fangraphs
+            To link BBRef stats to Statcast:
+              JOIN player_ids ON batting_stats_bref.mlbID = player_ids.key_mlbam
+            Note: key_mlbam is NULL for non-MLB players in the register.
+            Use name_first and name_last for name matching.
+
+        fields:
+          - name: key_mlbam
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: key_mlbam
+            description: >
+              MLBAM (MLB Advanced Media) numeric player ID. Used in Statcast's
+              'batter' and 'pitcher' columns. The primary key for joining
+              Statcast data to this register.
+            ai_context:
+              synonyms: ["MLBAM ID", "MLB ID", "Baseball Savant ID"]
+
+          - name: key_fangraphs
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: key_fangraphs
+            description: FanGraphs player ID. Matches 'IDfg' in batting_stats and pitching_stats.
+            ai_context:
+              synonyms: ["FanGraphs ID", "FG ID"]
+
+          - name: key_bbref
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: key_bbref
+            description: Baseball Reference player ID (e.g. 'troutmi01').
+            ai_context:
+              synonyms: ["Baseball Reference ID", "BBRef ID", "bref ID"]
+
+          - name: key_retro
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: key_retro
+            description: Retrosheet player ID.
+            ai_context:
+              synonyms: ["Retrosheet ID"]
+
+          - name: name_last
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: name_last
+            description: Player last name.
+            ai_context:
+              synonyms: ["last name", "surname"]
+
+          - name: name_first
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: name_first
+            description: Player first name.
+            ai_context:
+              synonyms: ["first name", "given name"]
+
+          - name: mlb_played_first
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: mlb_played_first
+            description: First MLB season the player appeared.
+            dimension:
+              is_time: true
+            ai_context:
+              synonyms: ["debut year", "first season", "rookie year"]
+
+          - name: mlb_played_last
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: mlb_played_last
+            description: Most recent MLB season the player appeared.
+            dimension:
+              is_time: true
+            ai_context:
+              synonyms: ["last season", "final season"]
