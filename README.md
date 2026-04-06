@@ -1,5 +1,9 @@
 # Baseball Analyst
 
+Accompanying [blog post](https://www.plydb.com/blog/plydb-fun-baseball-analyst/).
+
+---
+
 Bring your own AI agent and ask questions about MLB data in plain English — no
 SQL required.
 
